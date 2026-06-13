@@ -18,6 +18,7 @@
     "dotenv": "^16.4.7",
     "ejs": "^5.0.1",
     "express": "~4.16.1",
+    "gh-pages": "^6.3.0",
     "jsonwebtoken": "^9.0.2",
     "swagger-jsdoc": "^6.2.8",
     "uuid": "^11.1.0"
