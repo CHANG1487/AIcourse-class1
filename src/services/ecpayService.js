@@ -40,8 +40,10 @@ function buildAioFormParams(order, items) {
   const isStaging = process.env.ECPAY_ENV !== 'production';
   const baseUrl = process.env.BASE_URL || 'http://localhost:3001';
 
-  // MerchantTradeNo: alphanumeric only, max 20 chars — strip hyphens from ORD-YYYYMMDD-XXXXX (→ 16 chars)
-  const merchantTradeNo = order.order_no.replace(/-/g, '');
+  // MerchantTradeNo: alphanumeric only, max 20 chars — append 4-digit time suffix for retry uniqueness
+  const baseMerchantTradeNo = order.order_no.replace(/-/g, '');
+  const suffix = String(Math.floor(Date.now() / 1000) % 9999).padStart(4, '0');
+  const merchantTradeNo = (baseMerchantTradeNo + suffix).slice(0, 20);
 
   // Taiwan time UTC+8 — ECPay rejects orders with incorrect timezone
   const now = new Date();
