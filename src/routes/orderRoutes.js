@@ -2,6 +2,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../database');
 const authMiddleware = require('../middleware/authMiddleware');
+const { buildAioFormParams, queryTradeInfo } = require('../services/ecpayService');
 
 const router = express.Router();
 
@@ -307,6 +308,74 @@ router.get('/:id', (req, res) => {
     error: null,
     message: '成功'
   });
+});
+
+// POST /api/orders/:id/ecpay/create — Generate AIO payment form params
+router.post('/:id/ecpay/create', (req, res) => {
+  const userId = req.user.userId;
+  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(req.params.id, userId);
+
+  if (!order) {
+    return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
+  }
+  if (order.status !== 'pending') {
+    return res.status(400).json({ data: null, error: 'INVALID_STATUS', message: '訂單狀態不是 pending' });
+  }
+
+  try {
+    const items = db.prepare('SELECT product_name, quantity FROM order_items WHERE order_id = ?').all(order.id);
+    const { formUrl, params, merchantTradeNo } = buildAioFormParams(order, items);
+    db.prepare('UPDATE orders SET ecpay_merchant_trade_no = ? WHERE id = ?').run(merchantTradeNo, order.id);
+    return res.json({ data: { formUrl, params }, error: null, message: '付款連結已建立' });
+  } catch (err) {
+    console.error('[ECPay create] 建立付款連結失敗:', err.message, err.stack);
+    return res.status(500).json({ data: null, error: 'ECPAY_CREATE_FAILED', message: '建立付款連結失敗：' + err.message });
+  }
+});
+
+// POST /api/orders/:id/ecpay/verify — Query ECPay for payment result and update order status
+router.post('/:id/ecpay/verify', async (req, res) => {
+  const userId = req.user.userId;
+  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(req.params.id, userId);
+
+  if (!order) {
+    return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
+  }
+
+  // Idempotent: if already settled, return current status without querying ECPay
+  if (order.status !== 'pending') {
+    return res.json({ data: { status: order.status, tradeStatus: null }, error: null, message: '訂單狀態已確認' });
+  }
+
+  if (!order.ecpay_merchant_trade_no) {
+    return res.status(400).json({ data: null, error: 'NO_TRADE_NO', message: '尚未建立付款，請先前往付款' });
+  }
+
+  try {
+    const info = await queryTradeInfo(order.ecpay_merchant_trade_no);
+    const tradeStatus = info.TradeStatus;
+
+    let newStatus = order.status;
+    if (tradeStatus === '1') {
+      newStatus = 'paid';
+    } else if (tradeStatus !== '0') {
+      // '10200095' = abandoned, or any other non-pending status
+      newStatus = 'failed';
+    }
+
+    if (newStatus !== order.status) {
+      db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(newStatus, order.id);
+    }
+
+    const messages = { paid: '付款成功', failed: '付款失敗或交易取消', pending: '尚未完成付款' };
+    return res.json({
+      data: { status: newStatus, tradeStatus },
+      error: null,
+      message: messages[newStatus] || '查詢完成'
+    });
+  } catch (err) {
+    return res.status(502).json({ data: null, error: 'ECPAY_ERROR', message: '無法連線至綠界查詢，請稍後重試' });
+  }
 });
 
 /**
